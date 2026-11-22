@@ -1,0 +1,5 @@
+# Never commit real customer data
+*.xlsx
+*.xls
+!docs/*.xlsx
+.DS_Store

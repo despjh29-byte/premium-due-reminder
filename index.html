@@ -1,0 +1,841 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="description" content="Find customers whose insurance premium is due, send English + Chinese WhatsApp reminders 3 days before, and export a PDF list.">
+<style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
+<title>Premium Due Reminder</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+/* Layout: phone-first single column; sticky check-in header, status-sorted customer cards, bottom sheets for actions */
+:root{
+  --bg:#EEF3F3; --surface:#FFFFFF; --sunk:#E4ECEC; --ink:#122126; --muted:#56676D; --line:#D3DEDF;
+  --accent:#0C6660; --accent-ink:#FFFFFF; --accent-soft:#D6ECE9;
+  --today:#A84A06; --today-bg:#FCE8D6; --late:#B42318; --late-bg:#FBE3E0;
+  --soon:#1C5A9E; --soon-bg:#DFEAF7; --ok:#2B7535; --ok-bg:#E0F0E2;
+  --wa:#128C4A; --wa-wall:#E7EFEA; --wa-bubble:#D9FDD3; --wa-meta:#667781;
+  --pdf-paper:#FFFFFF; --pdf-ink:#14232A; --pdf-muted:#5A6A70; --pdf-line:#D7E0E2; --pdf-accent:#0C6660; --pdf-soft:#EAF4F3;
+  --f-display:"Figtree",system-ui,sans-serif;
+  --f-body:"IBM Plex Sans","Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --f-zh:"Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+  --r:12px;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0D1618; --surface:#152227; --sunk:#1B2B31; --ink:#E4EDEE; --muted:#93A6AB; --line:#283A40;
+  --accent:#4DBDB2; --accent-ink:#06211F; --accent-soft:#163A37;
+  --today:#F2A15A; --today-bg:#3A2411; --late:#F2887E; --late-bg:#3B1915;
+  --soon:#8DB8EE; --soon-bg:#132A43; --ok:#82CC8C; --ok-bg:#15301A; --wa:#4CD486; --wa-wall:#0B141A; --wa-bubble:#005C4B; --wa-meta:#9FB3BB; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0D1618; --surface:#152227; --sunk:#1B2B31; --ink:#E4EDEE; --muted:#93A6AB; --line:#283A40;
+  --accent:#4DBDB2; --accent-ink:#06211F; --accent-soft:#163A37;
+  --today:#F2A15A; --today-bg:#3A2411; --late:#F2887E; --late-bg:#3B1915;
+  --soon:#8DB8EE; --soon-bg:#132A43; --ok:#82CC8C; --ok-bg:#15301A; --wa:#4CD486; --wa-wall:#0B141A; --wa-bubble:#005C4B; --wa-meta:#9FB3BB; color-scheme:dark}
+*{box-sizing:border-box}
+.wa-chat{background:var(--wa-wall);border-radius:12px;padding:14px 12px;display:flex;flex-direction:column;gap:6px}
+.wa-chat .wa-to{align-self:center;font-size:11.5px;color:var(--wa-meta);background:var(--surface);padding:2px 10px;border-radius:8px}
+.wa-bubble{align-self:flex-end;max-width:92%;background:var(--wa-bubble);color:var(--ink);border-radius:10px 2px 10px 10px;padding:8px 10px 18px;white-space:pre-wrap;font-size:14.5px;line-height:1.45;position:relative;box-shadow:0 1px 1px rgba(0,0,0,.12);overflow-wrap:anywhere}
+.wa-bubble .wa-time{position:absolute;right:8px;bottom:3px;font-size:11px;color:var(--wa-meta)}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.5}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--surface)}
+.wrap{max-width:760px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.num{font-variant-numeric:tabular-nums}
+.zh{font-family:var(--f-zh)}
+
+header.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--surface);border-bottom:1px solid var(--line)}
+header.top .wrap{display:flex;align-items:center;gap:12px;padding-block:10px;flex-wrap:wrap}
+.brand{display:flex;flex-direction:column;flex:1;min-width:0}
+.brand h1{font-size:19px;font-weight:800;letter-spacing:-.01em}
+.brand span{font-size:12.5px;color:var(--muted)}
+.asof{display:flex;flex-direction:column;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.asof input{font-size:14px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);text-transform:none;letter-spacing:0}
+
+main{padding-block:16px 120px;display:flex;flex-direction:column;gap:16px}
+.cycle{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:16px;display:flex;flex-direction:column;gap:12px}
+.cycle .eyebrow{font-size:11.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--accent);font-weight:600}
+.cycle h2{font-size:22px;font-weight:800;line-height:1.2}
+.cycle p{margin:0;color:var(--muted);font-size:14px}
+.counts{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.count{border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:0}
+.count b{font-family:var(--f-display);font-size:24px;line-height:1.1}
+.count span{font-size:12px}
+.c-today{background:var(--today-bg);color:var(--today)}
+.c-late{background:var(--late-bg);color:var(--late)}
+.c-soon{background:var(--soon-bg);color:var(--soon)}
+.c-ok{background:var(--ok-bg);color:var(--ok)}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:9px 14px;font-weight:600;font-size:14px;display:inline-flex;align-items:center;gap:6px;text-decoration:none;color:var(--ink)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.wa{background:var(--wa);border-color:var(--wa);color:#FFFFFF}
+.btn.danger{color:var(--late);border-color:var(--late)}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--accent);padding-inline:6px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn svg{width:16px;height:16px;flex:none}
+
+.banner{border-radius:var(--r);padding:12px 14px;font-size:14px;display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap}
+.banner.sample{background:var(--accent-soft);color:var(--ink)}
+.banner.warn{background:var(--today-bg);color:var(--ink)}
+.banner p{margin:0;flex:1;min-width:200px}
+
+nav.tabs{display:flex;gap:4px;background:var(--sunk);padding:4px;border-radius:12px;overflow-x:auto}
+nav.tabs button{flex:1;border:0;background:transparent;padding:8px 10px;border-radius:9px;font-weight:600;font-size:13.5px;color:var(--muted);white-space:nowrap}
+nav.tabs button[aria-selected="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+nav.tabs .badge{display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;background:var(--late);color:var(--surface);font-size:11px;margin-left:4px}
+
+.list{display:flex;flex-direction:column;gap:10px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:14px;display:grid;grid-template-columns:1fr auto;gap:6px 12px}
+.card .who{min-width:0}
+.card .who h3{font-size:16.5px;font-weight:700;overflow-wrap:anywhere}
+.card .who .co{color:var(--muted);font-size:13.5px;overflow-wrap:anywhere}
+.card .due{text-align:right}
+.card .due b{font-family:var(--f-display);font-size:17px;display:block}
+.card .due span{font-size:12px;color:var(--muted)}
+.card .meta{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px;color:var(--muted)}
+.card .meta strong{color:var(--ink);font-weight:500}
+.card .acts{grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px}
+.pill{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600}
+.p-today{background:var(--today-bg);color:var(--today)}
+.p-late{background:var(--late-bg);color:var(--late)}
+.p-soon{background:var(--soon-bg);color:var(--soon)}
+.p-ok{background:var(--ok-bg);color:var(--ok)}
+.p-info{background:var(--sunk);color:var(--muted)}
+.issues{grid-column:1/-1;margin:2px 0 0;padding:8px 10px;border-radius:8px;background:var(--late-bg);color:var(--late);font-size:13px;list-style:none;display:flex;flex-direction:column;gap:2px}
+.empty{background:var(--surface);border:1px dashed var(--line);border-radius:var(--r);padding:24px;text-align:center;color:var(--muted)}
+.section-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap}
+.section-h h2{font-size:16px}
+.section-h span{font-size:13px;color:var(--muted)}
+
+.settings{display:flex;flex-direction:column;gap:14px}
+.field{display:flex;flex-direction:column;gap:4px}
+.field label,.field .lbl{font-size:13px;font-weight:600}
+.field small{color:var(--muted);font-size:12.5px}
+.field input,.field select,.field textarea{border:1px solid var(--line);border-radius:9px;padding:9px 10px;background:var(--bg);width:100%;min-width:0}
+.field textarea{min-height:150px;resize:vertical;line-height:1.45}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:16px;display:flex;flex-direction:column;gap:14px}
+.panel h2{font-size:16px}
+
+.backdrop{position:fixed;inset:0;background:rgba(6,18,20,.45);z-index:20}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:21;background:var(--surface);border-radius:18px 18px 0 0;max-height:92vh;overflow-y:auto;padding:18px max(16px,env(safe-area-inset-right,0px)) calc(20px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));box-shadow:0 -8px 30px rgba(0,0,0,.18)}
+.sheet-in{max-width:640px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.sheet-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.sheet-head h2{font-size:19px}
+.sheet-head p{margin:2px 0 0;color:var(--muted);font-size:13.5px}
+.x{border:0;background:var(--sunk);border-radius:50%;width:32px;height:32px;flex:none;font-size:18px;line-height:1}
+.msg{white-space:pre-wrap;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px;font-size:14px}
+.confirm{border:1px solid var(--today);background:var(--today-bg);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:10px;font-size:14px}
+.confirm.red{border-color:var(--late);background:var(--late-bg)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:14px}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0;overflow-wrap:anywhere}
+.shot{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--bg)}
+.shot img{display:block;width:100%;max-height:260px;object-fit:contain}
+.seg{display:inline-flex;background:var(--sunk);border-radius:9px;padding:3px;gap:2px}
+.seg button{border:0;background:transparent;padding:5px 12px;border-radius:7px;font-size:13px;font-weight:600;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink)}
+.tbl-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
+.tbl{border-collapse:collapse;width:100%;font-size:13px}
+.tbl th,.tbl td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+.tbl th{background:var(--sunk);font-weight:600}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));z-index:30;background:var(--ink);color:var(--surface);padding:10px 16px;border-radius:10px;font-size:14px;max-width:calc(100% - 32px)}
+.progress{font-size:13px;color:var(--muted)}
+footer.help{font-size:12.5px;color:var(--muted);text-align:center;padding-top:8px}
+
+/* PDF pages (rendered off-screen, always on white paper) */
+#pdfStage{position:absolute;left:-12000px;top:0;width:794px}
+.pp{width:794px;height:1123px;background:var(--pdf-paper);color:var(--pdf-ink);font-family:var(--f-body);padding:46px 50px 40px;display:flex;flex-direction:column;gap:16px;position:relative;overflow:hidden}
+.pp .ph{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid var(--pdf-accent);padding-bottom:12px}
+.pp .ph h1{font-family:var(--f-display);font-size:26px;font-weight:800;color:var(--pdf-ink)}
+.pp .ph .sub{font-size:12.5px;color:var(--pdf-muted)}
+.pp .ph .tag{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--pdf-accent);font-weight:700}
+.pp table{border-collapse:collapse;width:100%;font-size:11px}
+.pp th{background:var(--pdf-soft);color:var(--pdf-ink);text-align:left;padding:7px 6px;font-weight:600;border-bottom:1px solid var(--pdf-line)}
+.pp td{padding:7px 6px;border-bottom:1px solid var(--pdf-line);vertical-align:top}
+.pp td small{color:var(--pdf-muted);display:block}
+.pp td.nw{white-space:nowrap}
+.pp .kvp{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 24px;font-size:13px}
+.pp .kvp div{display:flex;flex-direction:column;border-bottom:1px solid var(--pdf-line);padding-bottom:5px}
+.pp .kvp span{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--pdf-muted)}
+.pp .mbox{border:1px solid var(--pdf-line);border-radius:8px;padding:12px 14px;font-size:12.5px;white-space:pre-wrap;line-height:1.5;background:var(--pdf-paper)}
+.pp .mlabel{font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--pdf-accent);font-weight:700;margin-bottom:4px}
+.pp .msgs{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.pp .shotbox{flex:1;min-height:0;border:1px solid var(--pdf-line);border-radius:8px;display:flex;flex-direction:column;overflow:hidden}
+.pp .shotbox .mlabel{padding:8px 12px 0}
+.pp .shotbox img{flex:1;min-height:0;width:100%;object-fit:contain;padding:8px}
+.pp .noshot{flex:1;display:flex;align-items:center;justify-content:center;color:var(--pdf-muted);font-size:13px;padding:20px;text-align:center}
+.pp .pf{position:absolute;left:50px;right:50px;bottom:22px;display:flex;justify-content:space-between;font-size:10px;color:var(--pdf-muted)}
+.pp .st{font-weight:700}
+@media (max-width:520px){
+  .counts{grid-template-columns:repeat(2,1fr)}
+  .grid2{grid-template-columns:1fr}
+  .cycle h2{font-size:19px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<header class="top"><div class="wrap">
+  <div class="brand"><h1>Premium Due Reminder</h1><span>Check-in on the 5th &amp; 25th · remind 3 days before due</span></div>
+  <label class="asof" for="asof">As of<input type="date" id="asof"></label>
+</div></header>
+
+<div class="wrap"><main id="app"></main></div>
+<div id="sheetRoot"></div>
+<div id="pdfStage" aria-hidden="true"></div>
+
+<script>
+(() => {
+'use strict';
+/* ---------- helpers ---------- */
+const $ = (s, el=document) => el.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pad = n => String(n).padStart(2,'0');
+const MONTHS = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; };
+const toUTC = iso => { const [y,m,d] = iso.split('-').map(Number); return Date.UTC(y,m-1,d); };
+const fromUTC = t => { const d = new Date(t); return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}`; };
+const addDays = (iso,n) => fromUTC(toUTC(iso) + n*86400000);
+const diffDays = (a,b) => Math.round((toUTC(a) - toUTC(b))/86400000); // a - b
+const ymd = iso => iso.split('-').map(Number);
+const daysInMonth = (y,m) => new Date(Date.UTC(y,m,0)).getUTCDate();
+const validYMD = (y,m,d) => y>1900 && y<2200 && m>=1 && m<=12 && d>=1 && d<=daysInMonth(y,m);
+const mkISO = (y,m,d) => `${y}-${pad(m)}-${pad(d)}`;
+function addMonthsAnchor(iso, k){ const [y,m,d] = ymd(iso); let mm = m-1+k; const yy = y + Math.floor(mm/12); mm = ((mm%12)+12)%12; return mkISO(yy, mm+1, Math.min(d, daysInMonth(yy, mm+1))); }
+const fmt = iso => { if(!iso) return '—'; const [y,m,d] = ymd(iso); return `${d} ${MON[m-1]} ${y}`; };
+const fmtDow = iso => { const [y,m,d] = ymd(iso); return `${DOW[new Date(Date.UTC(y,m-1,d)).getUTCDay()]}, ${d} ${MON[m-1]}`; };
+const fmtShort = iso => { const [,m,d] = ymd(iso); return `${d} ${MON[m-1]}`; };
+const fmtZH = iso => { const [y,m,d] = ymd(iso); return `${y}年${m}月${d}日`; };
+const uid = () => Math.random().toString(36).slice(2,10);
+
+/* ---------- state ---------- */
+const LS_KEY = 'premium-due-reminder.v1';
+const OLD_TPL_EN = "Dear {name},\n\nThis is a friendly reminder that your insurance premium[[ for policy {policy}]][[ of {amount}]] is due on {due_date}.\n\nPlease make payment on or before the due date to keep your coverage active. If you have already paid, please ignore this message.\n\nThank you.\n{sender}[[\nAccount manager: {manager}]]";
+const OLD_TPL_ZH = "{name} 您好，\n\n温馨提醒：您的保单[[ {policy} ]]保费[[（{amount}）]]将于 {due_date} 到期。\n\n请于到期日或之前完成缴费，以确保保障持续有效。如您已缴付，请忽略此信息。\n\n谢谢！\n{sender}[[\n客户经理：{manager}]]";
+const TPL_EN = "Dear {name},\n\n🔔 *Premium Payment Reminder*\n\nThis is a friendly reminder that your insurance premium is due soon:\n[[\n📄 Policy no.: *{policy}*]][[\n💰 Amount: *{amount}*]]\n📅 Due date: *{due_date}*\n\nPlease make payment on or before the due date to keep your coverage active. If you have already paid, kindly ignore this message.\n\nThank you 🙏\n*{sender}*[[\nAccount manager: {manager}]]";
+const TPL_ZH = "{name} 您好，\n\n🔔 *保费缴付提醒*\n\n温馨提醒，您的保费即将到期：\n[[\n📄 保单号：*{policy}*]][[\n💰 金额：*{amount}*]]\n📅 到期日：*{due_date}*\n\n请于到期日或之前完成缴费，以确保保障持续有效。如您已缴付，请忽略此信息。\n\n谢谢 🙏\n*{sender}*[[\n客户经理：{manager}]]";
+const waHTML = t => esc(t).replace(/\*([^*\n]+)\*/g, '<b>$1</b>');
+const DEFAULT_SETTINGS = { sender:'Customer Service Team', cc:'', currency:'', dateOrder:'DMY', blankFreq:'monthly', lang:'both', tplEN:TPL_EN, tplZH:TPL_ZH };
+let S = { customers:[], settings:{...DEFAULT_SETTINGS}, sent:{}, isSample:true };
+let asOf = todayISO();
+let tab = 'due';
+let shots = {}; // id -> objectURL
+
+function save(){
+  try{
+    const out = { settings:S.settings, sent:S.sent, isSample:S.isSample };
+    if(!S.isSample) out.customers = S.customers;
+    localStorage.setItem(LS_KEY, JSON.stringify(out));
+  }catch(e){}
+}
+function load(){
+  try{ const raw = localStorage.getItem(LS_KEY); if(!raw) return false;
+    const o = JSON.parse(raw); S.settings = {...DEFAULT_SETTINGS, ...(o.settings||{})}; S.sent = o.sent||{};
+    // upgrade untouched old default wording to the new WhatsApp-styled wording (custom wording is kept)
+    if(S.settings.tplEN === OLD_TPL_EN) S.settings.tplEN = TPL_EN;
+    if(S.settings.tplZH === OLD_TPL_ZH) S.settings.tplZH = TPL_ZH;
+    if(o.isSample===false && Array.isArray(o.customers)){ S.customers = o.customers; S.isSample=false; return true; }
+  }catch(e){}
+  return false;
+}
+
+/* ---------- screenshots (IndexedDB) ---------- */
+let dbP = null;
+function idb(){
+  if(dbP) return dbP;
+  dbP = new Promise(res => { try{ const r = indexedDB.open('pdr-shots',1); r.onupgradeneeded = () => r.result.createObjectStore('shots'); r.onsuccess = () => res(r.result); r.onerror = () => res(null); }catch(e){ res(null); } });
+  return dbP;
+}
+async function shotPut(id, blob){ const db = await idb(); if(db){ try{ await new Promise((ok,no)=>{ const t=db.transaction('shots','readwrite'); t.objectStore('shots').put(blob,id); t.oncomplete=ok; t.onerror=no; }); }catch(e){} } if(shots[id]) URL.revokeObjectURL(shots[id]); shots[id] = URL.createObjectURL(blob); }
+async function shotDel(id){ const db = await idb(); if(db){ try{ db.transaction('shots','readwrite').objectStore('shots').delete(id); }catch(e){} } if(shots[id]) URL.revokeObjectURL(shots[id]); delete shots[id]; }
+async function shotLoadAll(){ const db = await idb(); if(!db) return; try{ await new Promise(ok=>{ const t=db.transaction('shots','readonly'); const st=t.objectStore('shots'); const rq=st.openCursor(); rq.onsuccess=()=>{ const c=rq.result; if(c){ shots[c.key]=URL.createObjectURL(c.value); c.continue(); } else ok(); }; rq.onerror=ok; }); }catch(e){} }
+async function shotClearAll(){ const db = await idb(); if(db){ try{ db.transaction('shots','readwrite').objectStore('shots').clear(); }catch(e){} } Object.values(shots).forEach(u=>URL.revokeObjectURL(u)); shots={}; }
+
+/* ---------- parsing ---------- */
+function parseDate(v, order){
+  if(v===null || v===undefined) return {blank:true};
+  if(v instanceof Date && !isNaN(v)) return {iso: mkISO(v.getFullYear(), v.getMonth()+1, v.getDate())};
+  if(typeof v === 'number'){
+    if(v>10000 && v<100000){ const t = Date.UTC(1899,11,30) + Math.round(v)*86400000; return {iso: fromUTC(t)}; }
+    return {error:true};
+  }
+  const s = String(v).trim();
+  if(!s || s==='-' || /^n\/?a$/i.test(s)) return {blank:true};
+  let m;
+  if((m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})(?:[T\s].*)?$/))){ const y=+m[1],mo=+m[2],d=+m[3]; return validYMD(y,mo,d)?{iso:mkISO(y,mo,d)}:{error:true}; }
+  if((m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2}|\d{4})$/))){
+    let a=+m[1], b=+m[2], y=+m[3]; if(m[3].length===2){ const cut=(new Date().getFullYear()%100)+10; y += y>cut?1900:2000; }
+    const [d,mo] = order==='MDY' ? [b,a] : [a,b];
+    return validYMD(y,mo,d)?{iso:mkISO(y,mo,d)}:{error:true};
+  }
+  if((m = s.match(/^(\d{1,2})(?:st|nd|rd|th)?[\s\-]+([A-Za-z]{3,})\.?[\s\-,]+(\d{4})$/))){ const mo=MONTHS.indexOf(m[2].slice(0,3).toLowerCase())+1; const d=+m[1],y=+m[3]; return mo&&validYMD(y,mo,d)?{iso:mkISO(y,mo,d)}:{error:true}; }
+  if((m = s.match(/^([A-Za-z]{3,})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})$/))){ const mo=MONTHS.indexOf(m[1].slice(0,3).toLowerCase())+1; const d=+m[2],y=+m[3]; return mo&&validYMD(y,mo,d)?{iso:mkISO(y,mo,d)}:{error:true}; }
+  if((m = s.match(/^(\d{4})年(\d{1,2})月(\d{1,2})日?$/))){ const y=+m[1],mo=+m[2],d=+m[3]; return validYMD(y,mo,d)?{iso:mkISO(y,mo,d)}:{error:true}; }
+  return {error:true};
+}
+const FREQ = { monthly:1, quarterly:3, 'half-yearly':6, yearly:12 };
+const FREQ_LABEL = { monthly:'Monthly', quarterly:'Quarterly', 'half-yearly':'Half-yearly', yearly:'Yearly' };
+function parseFreq(v){
+  const s = String(v ?? '').trim().toLowerCase().replace(/[\s_]+/g,'');
+  if(!s) return {blank:true};
+  if(['m','monthly','month','1','月缴','每月'].includes(s)) return {f:'monthly'};
+  if(['q','quarterly','quarter','3','季缴'].includes(s)) return {f:'quarterly'};
+  if(['h','hy','half','halfyearly','half-yearly','semiannual','semi-annual','semiannually','6','半年缴'].includes(s)) return {f:'half-yearly'};
+  if(['y','yearly','annual','annually','year','12','年缴'].includes(s)) return {f:'yearly'};
+  return {error:true};
+}
+function normPhone(raw, cc){
+  let s = String(raw ?? '').trim();
+  if(!s || s==='-' ) return {issue:'No phone number'};
+  const plus = s.startsWith('+');
+  let d = s.replace(/\D/g,'');
+  if(!d) return {issue:`Phone "${s}" has no digits`};
+  if(plus){ /* already international */ }
+  else if(d.startsWith('00')) d = d.slice(2);
+  else if(d.startsWith('0')){
+    if(!cc) return {issue:'Local phone number: choose your country code in Settings', local:true};
+    d = cc + d.slice(1);
+  }
+  if(d.length<10 || d.length>15) return {issue:`Phone "${s}" looks too ${d.length<10?'short':'long'}${typeof raw==='number'&&d.length<10?' (Excel may have dropped the leading 0)':''}`};
+  return {wa:d};
+}
+function money(raw){
+  if(raw===null || raw===undefined || String(raw).trim()==='') return '';
+  const s = String(raw).trim();
+  const n = Number(s.replace(/,/g,''));
+  if(!isNaN(n) && /^[\d,.\s]+$/.test(s)){ const v = n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); return S.settings.currency ? `${S.settings.currency} ${v}` : v; }
+  return s;
+}
+
+/* ---------- analysis ---------- */
+function cycleFor(iso){
+  const [y,m,d] = ymd(iso);
+  let start;
+  if(d>=25) start = mkISO(y,m,25);
+  else if(d>=5) start = mkISO(y,m,5);
+  else { const p = addMonthsAnchor(mkISO(y,m,1),-1); const [py,pm]=ymd(p); start = mkISO(py,pm,25); }
+  const [sy,sm,sd] = ymd(start);
+  const next = sd===5 ? mkISO(sy,sm,25) : (()=>{ const n=addMonthsAnchor(mkISO(sy,sm,1),1); const [ny,nm]=ymd(n); return mkISO(ny,nm,5); })();
+  return { start, next, end: addDays(next,3), isCheckIn: iso===start };
+}
+function analyzeAll(){
+  const cyc = cycleFor(asOf);
+  const st = S.settings;
+  const list = S.customers.map(c => {
+    const a = { c, issues:[], notes:[], blocking:false };
+    if(!String(c.name||'').trim()){ a.issues.push('Customer name is missing'); a.blocking = true; }
+    const dp = parseDate(c.dueRaw, st.dateOrder);
+    if(dp.blank){ a.issues.push('Premium due date is missing'); a.blocking = true; }
+    else if(dp.error){ a.issues.push(`Due date "${c.dueRaw}" is not a real date`); a.blocking = true; }
+    else a.due = dp.iso;
+    const fp = parseFreq(c.freqRaw);
+    if(fp.error){ a.issues.push(`Frequency "${c.freqRaw}" not recognised`); a.blocking = true; }
+    else if(fp.blank){ a.freq = st.blankFreq==='monthly' ? 'monthly' : ''; a.freqAssumed = !!a.freq; }
+    else a.freq = fp.f;
+    const ph = normPhone(c.phoneRaw, st.cc);
+    if(ph.issue){ a.issues.push(ph.issue); a.phoneLocal = !!ph.local; } else a.wa = ph.wa;
+    const bp = parseDate(c.birthdayRaw, st.dateOrder);
+    if(bp.iso) a.bday = bp.iso; else if(bp.error) a.notes.push(`Birthday "${c.birthdayRaw}" unreadable`);
+    if(a.due){
+      if(a.freq){ let k=0, d=a.due; while(d < cyc.start && k<600){ k += FREQ[a.freq]; d = addMonthsAnchor(a.due,k); } a.next = d; }
+      else { a.next = a.due; if(a.due < cyc.start){ a.issues.push('Due date has passed and no payment frequency is set'); a.blocking = true; } }
+    }
+    if(a.next && !a.blocking){
+      a.inCycle = a.next >= cyc.start && a.next <= cyc.end;
+      a.remindOn = addDays(a.next,-3);
+      const dd = diffDays(a.next, asOf);
+      a.key = c.id + '|' + a.next;
+      if(S.sent[a.key]) a.status = 'sent';
+      else if(dd < 0) a.status = 'late';
+      else if(dd <= 3) a.status = 'today';
+      else a.status = 'soon';
+      a.daysLeft = dd;
+    }
+    if(a.bday && a.next){ const [,bm,bd] = ymd(a.bday); const [cy] = ymd(cyc.start); for(const yy of [cy,cy+1]){ if(!validYMD(yy,bm,bd)) continue; const b=mkISO(yy,bm,bd); if(b>=cyc.start && b<=cyc.end){ a.bdayInCycle=b; break; } } }
+    return a;
+  });
+  // duplicates
+  const seen = {};
+  list.forEach(a => { const c=a.c; const k = c.policy ? 'p:'+String(c.policy).trim().toLowerCase() : (a.wa ? 'w:'+a.wa+'|'+String(c.name).trim().toLowerCase() : null); if(!k) return; (seen[k] = seen[k]||[]).push(a); });
+  Object.values(seen).forEach(g => { if(g.length>1) g.forEach(a => a.issues.push(`Possible duplicate (${g.length} rows share this ${g[0].c.policy?'policy number':'name and phone'})`)); });
+  return { cyc, list };
+}
+const ORDER = { today:0, late:1, soon:2, sent:3 };
+function statusPill(a){
+  if(a.status==='today') return `<span class="pill p-today">${a.daysLeft===0?'Due today · remind now':'Remind today'}</span>`;
+  if(a.status==='late') return `<span class="pill p-late">Past due ${-a.daysLeft}d</span>`;
+  if(a.status==='soon') return `<span class="pill p-soon">Remind on ${fmtShort(a.remindOn)}</span>`;
+  if(a.status==='sent') return `<span class="pill p-ok">Reminded ${fmtShort(S.sent[a.key])}</span>`;
+  return '';
+}
+function statusText(a){
+  if(a.status==='today') return 'Remind today';
+  if(a.status==='late') return `Past due (${-a.daysLeft} day${a.daysLeft===-1?'':'s'})`;
+  if(a.status==='soon') return `Remind on ${fmtShort(a.remindOn)}`;
+  if(a.status==='sent') return `Reminded ${fmtShort(S.sent[a.key])}`;
+  return '';
+}
+
+/* ---------- messages ---------- */
+function vals(a, lang){
+  const c = a.c, st = S.settings;
+  return { name:String(c.name||'').trim(), company:String(c.company||'').trim(), policy:String(c.policy||'').trim(), amount:money(c.amountRaw),
+    due_date: a.next ? (lang==='zh'?fmtZH(a.next):fmt(a.next)) : '', manager:String(c.manager||'').trim(), sender:String(st.sender||'').trim() };
+}
+function fill(tpl, v){
+  const missing = [];
+  let out = tpl.replace(/\[\[([\s\S]*?)\]\]/g, (m, inner) => { const keys=[...inner.matchAll(/\{(\w+)\}/g)].map(x=>x[1]); return keys.every(k => v[k]) ? inner : ''; });
+  out = out.replace(/\{(\w+)\}/g, (m,k) => { if(v[k]) return v[k]; if(!(k in v)) return m; missing.push(k); return `[${k} missing]`; });
+  return { text: out, missing };
+}
+function buildMsg(a, lang){
+  const st = S.settings;
+  const en = fill(st.tplEN, vals(a,'en')), zh = fill(st.tplZH, vals(a,'zh'));
+  if(lang==='en') return en;
+  if(lang==='zh') return zh;
+  return { text: en.text + '\n\n━━━━━━━━━━━━\n\n' + zh.text, missing:[...new Set([...en.missing, ...zh.missing])] };
+}
+
+/* ---------- import ---------- */
+const FIELDS = [
+  ['dueRaw','Premium due date',['premiumduedate','duedate','nextduedate','premiumdue','paymentduedate','due','nextdue','duedt','到期日','缴费日期']],
+  ['birthdayRaw','Birthday',['birthday','dob','dateofbirth','birthdate','bday','生日','出生日期']],
+  ['phoneRaw','Phone',['phone','mobile','phoneno','phonenumber','mobileno','mobilenumber','contact','contactno','contactnumber','hp','hpno','handphone','whatsapp','tel','telephone','电话','手机']],
+  ['email','Email',['email','emailaddress','mail','电邮','邮箱']],
+  ['manager','Account manager',['accountmanager','manager','agent','agentname','servicingagent','advisor','adviser','relationshipmanager','rm','am','客户经理']],
+  ['policy','Policy no.',['policyno','policy','policynumber','policynum','contractno','certificateno','保单号']],
+  ['amountRaw','Premium amount',['premiumamount','premium','amount','premiumrm','modalpremium','保费']],
+  ['freqRaw','Frequency',['frequency','paymentfrequency','paymentmode','premiummode','mode','缴费方式']],
+  ['company','Company',['company','companyname','employer','organisation','organization','business','公司']],
+  ['name','Customer name',['customername','name','clientname','fullname','customer','client','policyholder','insuredname','客户姓名','姓名']],
+];
+const INCLUDES = { dueRaw:['due'], birthdayRaw:['birth','dob'], phoneRaw:['phone','mobile','whatsapp','contact'], email:['email'], manager:['manager','agent'], policy:['policy'], amountRaw:['premium','amount'], freqRaw:['frequency','mode'], company:['company'], name:['name'] };
+function mapHeaders(headers){
+  const norm = h => String(h||'').toLowerCase().replace(/[^a-z0-9一-鿿]/g,'');
+  const map = {}, used = new Set();
+  FIELDS.forEach(([key,,alts]) => { headers.forEach((h,i) => { if(map[key]===undefined && !used.has(i) && alts.includes(norm(h))){ map[key]=i; used.add(i); } }); });
+  FIELDS.forEach(([key]) => { if(map[key]!==undefined) return; headers.forEach((h,i) => { if(map[key]===undefined && !used.has(i) && INCLUDES[key].some(w => norm(h).includes(w))){ map[key]=i; used.add(i); } }); });
+  return map;
+}
+function rowsToCustomers(aoa){
+  // find header row: first row in first 10 with >=2 recognised headers
+  let hi = 0, best = -1, bestMap = {};
+  for(let i=0;i<Math.min(10,aoa.length);i++){ const m = mapHeaders(aoa[i]||[]); const n = Object.keys(m).length; if(n>best){ best=n; hi=i; bestMap=m; } }
+  const headers = aoa[hi] || [];
+  const customers = [];
+  for(let r=hi+1;r<aoa.length;r++){
+    const row = aoa[r] || [];
+    if(row.every(v => v===null || v===undefined || String(v).trim()==='')) continue;
+    const c = { id: uid() };
+    FIELDS.forEach(([key]) => { const i = bestMap[key]; let v = i===undefined ? '' : row[i]; if(v===undefined || v===null) v=''; c[key] = (typeof v==='string') ? v.trim() : v; });
+    customers.push(c);
+  }
+  return { headers, map: bestMap, customers, headerRow: hi+1 };
+}
+async function readFile(file){
+  const name = file.name.toLowerCase();
+  if(/\.(pdf|png|jpe?g|heic|webp)$/.test(name)) return { error:"This is a PDF or picture. The app doesn't read customer details from images, so it can't misread a phone number or date. Open the list in Excel (or copy it into the blank template) and import the .xlsx or .csv." };
+  if(!window.XLSX) return { error:'The spreadsheet reader did not load. Check your internet connection and reload the page.' };
+  const buf = await file.arrayBuffer();
+  return importBuffer(buf, file.name);
+}
+function importBuffer(buf, filename){
+  try{
+    // raw:true keeps CSV text exactly as typed (no leading-zero loss, no US-style date guessing)
+    const wb = XLSX.read(buf, { type:'array', cellDates:false, raw:/\.csv$/i.test(filename) });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const aoa = XLSX.utils.sheet_to_json(ws, { header:1, raw:true, defval:'' });
+    const res = rowsToCustomers(aoa);
+    res.filename = filename; res.sheet = wb.SheetNames[0];
+    return res;
+  }catch(e){ return { error:`Couldn't read "${filename}". Save it as .xlsx or .csv and try again.` }; }
+}
+
+/* ---------- rendering ---------- */
+const app = $('#app');
+const ICON = {
+  wa:'<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2Zm0 18.2a8.2 8.2 0 0 1-4.2-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2Zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8-.2-.1-.4-.1-.6.1l-.8 1c-.1.2-.3.2-.5.1a6.7 6.7 0 0 1-3.3-2.9c-.3-.4.2-.4.7-1.3.1-.2 0-.3 0-.4l-.8-1.8c-.2-.5-.4-.4-.6-.4h-.5a1 1 0 0 0-.7.3 3 3 0 0 0-.9 2.2 5.2 5.2 0 0 0 1.1 2.8 11.9 11.9 0 0 0 4.6 4c1.7.7 2.4.8 3.2.7.5-.1 1.5-.6 1.8-1.2.2-.6.2-1.1.1-1.2l-.5-.2Z"/></svg>',
+  pdf:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14"/></svg>',
+  cal:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>',
+  up:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 21V9m0 0-4 4m4-4 4 4M5 3h14"/></svg>',
+};
+function calLink(cyc){
+  const first = asOf === cyc.start ? asOf : cyc.next;
+  const s = first.replace(/-/g,''), e = addDays(first,1).replace(/-/g,'');
+  const p = new URLSearchParams({ action:'TEMPLATE', text:'Premium due check-in (Premium Due Reminder)', details:'Open Premium Due Reminder, review customers due in the next cycle, and send WhatsApp reminders 3 days before each due date.', dates:`${s}/${e}`, recur:'RRULE:FREQ=MONTHLY;BYMONTHDAY=5,25' });
+  return 'https://calendar.google.com/calendar/render?' + p.toString();
+}
+let A = null;
+function render(){
+  A = analyzeAll();
+  const { cyc, list } = A;
+  const due = list.filter(a => a.inCycle).sort((x,y) => ORDER[x.status]-ORDER[y.status] || x.next.localeCompare(y.next));
+  const needs = list.filter(a => a.issues.length);
+  const cnt = k => due.filter(a => a.status===k).length;
+  const localPhones = list.filter(a => a.phoneLocal).length;
+  const ci = asOf === cyc.start ? `Today is check-in day (${fmtDow(cyc.start)})` : `Last check-in ${fmtDow(cyc.start)} · next ${fmtDow(cyc.next)}`;
+  let h = `
+  <section class="cycle" aria-labelledby="cycH">
+    <div class="eyebrow">${esc(ci)}</div>
+    <h2 id="cycH">${due.length} premium${due.length===1?'':'s'} due ${fmtShort(cyc.start)} – ${fmt(cyc.end)}</h2>
+    <p>Covers everything due before the next check-in, plus 3 days so nobody falls between the 5th and the 25th.</p>
+    <div class="counts">
+      <div class="count c-today"><b class="num">${cnt('today')}</b><span>Remind today</span></div>
+      <div class="count c-late"><b class="num">${cnt('late')}</b><span>Past due</span></div>
+      <div class="count c-soon"><b class="num">${cnt('soon')}</b><span>Coming up</span></div>
+      <div class="count c-ok"><b class="num">${cnt('sent')}</b><span>Reminded</span></div>
+    </div>
+    <div class="row">
+      <button class="btn primary" data-act="pdf" ${due.length?'':'disabled'}>${ICON.pdf}Download PDF</button>
+      <button class="btn" data-act="import">${ICON.up}Import customer list</button>
+      <a class="btn" href="${esc(calLink(cyc))}" target="_blank" rel="noopener">${ICON.cal}Add 5th &amp; 25th to calendar</a>
+    </div>
+    <div class="progress" id="progress" hidden></div>
+  </section>`;
+  if(S.isSample) h += `<div class="banner sample"><p><strong>You're looking at sample customers.</strong> The names, numbers and policies are made up. Import your Excel or CSV list to replace them.</p><button class="btn primary" data-act="import">Import my list</button></div>`;
+  if(localPhones && !S.settings.cc) h += `<div class="banner warn"><p><strong>${localPhones} phone number${localPhones>1?'s start':' starts'} with 0.</strong> WhatsApp needs a country code. Choose yours so the app can add it.</p><select id="ccQuick" class="btn"><option value="">Choose…</option><option value="60">Malaysia +60</option><option value="65">Singapore +65</option><option value="852">Hong Kong +852</option><option value="86">China +86</option><option value="886">Taiwan +886</option><option value="62">Indonesia +62</option><option value="63">Philippines +63</option><option value="66">Thailand +66</option></select></div>`;
+  h += `<nav class="tabs" role="tablist">
+    <button role="tab" data-tab="due" aria-selected="${tab==='due'}">Due now</button>
+    <button role="tab" data-tab="all" aria-selected="${tab==='all'}">All</button>
+    <button role="tab" data-tab="needs" aria-selected="${tab==='needs'}">To check${needs.length?`<span class="badge">${needs.length}</span>`:''}</button>
+    <button role="tab" data-tab="settings" aria-selected="${tab==='settings'}">Settings</button>
+  </nav>`;
+  if(tab==='due') h += due.length ? `<div class="list">${due.map(card).join('')}</div>` : `<div class="empty">No premiums fall due between ${fmt(cyc.start)} and ${fmt(cyc.end)}.${needs.length?` Check the <strong>To check</strong> tab: ${needs.length} customer${needs.length>1?'s are':' is'} missing details.`:''}</div>`;
+  if(tab==='all'){ const all = [...list].sort((x,y) => (x.next||'9999').localeCompare(y.next||'9999')); h += `<div class="section-h"><h2>${list.length} customers</h2><span>Sorted by next due date</span></div><div class="list">${all.map(card).join('') || '<div class="empty">No customers yet. Import your list to start.</div>'}</div>`; }
+  if(tab==='needs') h += needs.length ? `<div class="section-h"><h2>${needs.length} to check</h2><span>The app won't guess these. Fix them and they'll join the due list.</span></div><div class="list">${needs.map(card).join('')}</div>` : `<div class="empty">Every customer has a name, a valid due date and a WhatsApp number.</div>`;
+  if(tab==='settings') h += settingsView();
+  h += `<footer class="help">Customer details stay in this browser on this device. Nothing is sent anywhere until you tap Send in WhatsApp.</footer>`;
+  app.innerHTML = h;
+}
+function card(a){
+  const c = a.c;
+  const meta = [];
+  if(c.policy) meta.push(`Policy <strong>${esc(c.policy)}</strong>`);
+  if(money(c.amountRaw)) meta.push(`Premium <strong class="num">${esc(money(c.amountRaw))}</strong>`);
+  if(a.freq) meta.push(`${FREQ_LABEL[a.freq]}${a.freqAssumed?' (assumed)':''}`);
+  if(c.manager) meta.push(`AM <strong>${esc(c.manager)}</strong>`);
+  meta.push(a.wa ? `WhatsApp <strong class="num">+${esc(a.wa)}</strong>` : `Phone <strong>${esc(c.phoneRaw||'none')}</strong>`);
+  const tags = [];
+  if(a.bdayInCycle) tags.push(`<span class="pill p-info">Birthday ${fmtShort(a.bdayInCycle)}</span>`);
+  if(shots[c.id]) tags.push(`<span class="pill p-info">ePartner screenshot</span>`);
+  return `<article class="card">
+    <div class="who"><h3>${esc(c.name||'(no name)')}</h3><div class="co">${esc(c.company||'')}</div></div>
+    <div class="due">${a.next?`<b class="num">${fmtShort(a.next)}</b><span>${a.next?String(ymd(a.next)[0]):''}</span>`:'<b>No date</b>'}</div>
+    <div class="meta">${meta.map(m=>`<span>${m}</span>`).join('')}</div>
+    ${a.issues.length?`<ul class="issues">${a.issues.map(i=>`<li>${esc(i)}</li>`).join('')}</ul>`:''}
+    <div class="acts">${a.status?statusPill(a):''}${tags.join('')}<span style="flex:1"></span>
+      ${a.status && a.status!=='sent' ? `<button class="btn wa" data-act="send" data-id="${c.id}" ${a.wa?'':'disabled title="Fix the phone number first"'}>${ICON.wa}Remind</button>` : ''}
+      ${a.status==='sent' ? `<button class="btn ghost" data-act="send" data-id="${c.id}">View message</button>` : ''}
+      <button class="btn" data-act="edit" data-id="${c.id}">${a.issues.length?'Fix':'Details'}</button>
+    </div>
+  </article>`;
+}
+function settingsView(){
+  const st = S.settings;
+  const opt = (v,l,cur) => `<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
+  return `<div class="settings">
+  <section class="panel"><h2>Sender and region</h2>
+    <div class="grid2">
+      <div class="field"><label for="sSender">Your name or team (used as {sender})</label><input id="sSender" value="${esc(st.sender)}"></div>
+      <div class="field"><label for="sCurrency">Currency shown before amounts</label><input id="sCurrency" value="${esc(st.currency)}" placeholder="e.g. RM, SGD, HKD"></div>
+      <div class="field"><label for="sCC">Country code for numbers starting with 0</label><select id="sCC">${opt('','Not set: flag them',st.cc)}${opt('60','Malaysia +60',st.cc)}${opt('65','Singapore +65',st.cc)}${opt('852','Hong Kong +852',st.cc)}${opt('86','China +86',st.cc)}${opt('886','Taiwan +886',st.cc)}${opt('62','Indonesia +62',st.cc)}${opt('63','Philippines +63',st.cc)}${opt('66','Thailand +66',st.cc)}</select></div>
+      <div class="field"><label for="sOrder">Dates like 03/04/2026 mean</label><select id="sOrder">${opt('DMY','3 April (day/month)',st.dateOrder)}${opt('MDY','March 4 (month/day)',st.dateOrder)}</select></div>
+      <div class="field"><label for="sFreq">If the Frequency column is blank</label><select id="sFreq">${opt('monthly','Treat as monthly',st.blankFreq)}${opt('none','One-off date: flag it once passed',st.blankFreq)}</select></div>
+      <div class="field"><label for="sLang">Default message language</label><select id="sLang">${opt('both','English + 中文',st.lang)}${opt('en','English only',st.lang)}${opt('zh','中文 only',st.lang)}</select></div>
+    </div>
+  </section>
+  <section class="panel"><h2>Message templates</h2>
+    <small style="color:var(--muted)">Placeholders: {name} {company} {policy} {amount} {due_date} {manager} {sender}. Text inside [[ ]] is left out when its placeholder is empty, so a customer with no policy number never sees an empty gap.</small>
+    <div class="field"><label for="sEN">English</label><textarea id="sEN">${esc(st.tplEN)}</textarea></div>
+    <div class="field"><label for="sZH">中文</label><textarea id="sZH" class="zh">${esc(st.tplZH)}</textarea></div>
+    <div class="row"><button class="btn" data-act="resetTpl">Restore default wording</button></div>
+  </section>
+  <section class="panel"><h2>Customer list</h2>
+    <div class="row"><button class="btn primary" data-act="import">${ICON.up}Import Excel / CSV</button><button class="btn" data-act="template">Download blank template</button><button class="btn danger" data-act="clear">Clear all customer data</button></div>
+    <small style="color:var(--muted)">Needed columns: Customer Name, Phone, Premium Due Date. Optional: Company, Birthday, Email, Account Manager, Policy No, Premium Amount, Frequency (Monthly / Quarterly / Half-yearly / Yearly).</small>
+  </section></div>`;
+}
+
+/* ---------- sheets ---------- */
+const sheetRoot = $('#sheetRoot');
+let lastFocus = null;
+function openSheet(html){ lastFocus = document.activeElement; sheetRoot.innerHTML = `<div class="backdrop" data-act="close"></div><div class="sheet" role="dialog" aria-modal="true"><div class="sheet-in">${html}</div></div>`; const f = sheetRoot.querySelector('.x'); f && f.focus(); }
+function closeSheet(){ sheetRoot.innerHTML = ''; lastFocus && lastFocus.focus && lastFocus.focus(); }
+const head = (t,sub) => `<div class="sheet-head"><div><h2>${t}</h2>${sub?`<p>${sub}</p>`:''}</div><button class="x" data-act="close" aria-label="Close">×</button></div>`;
+const findA = id => A.list.find(a => a.c.id===id);
+
+let sendLang = null;
+function openSend(id){
+  const a = findA(id); if(!a) return;
+  sendLang = sendLang || S.settings.lang;
+  const m = buildMsg(a, sendLang);
+  const sent = S.sent[a.key];
+  const waUrl = a.wa ? `https://wa.me/${a.wa}?text=${encodeURIComponent(m.text)}` : '';
+  openSheet(`${head(`Remind ${esc(a.c.name)}`, `Due ${fmt(a.next)} · ${esc(statusText(a))}`)}
+    <div class="row" style="justify-content:space-between;align-items:center"><div class="seg" role="group" aria-label="Language">
+      ${[['both','EN + 中文'],['en','English'],['zh','中文']].map(([k,l])=>`<button data-act="lang" data-lang="${k}" data-id="${id}" aria-pressed="${sendLang===k}">${l}</button>`).join('')}
+    </div><span class="num" style="font-size:14px">To: <strong>+${esc(a.wa||'')}</strong></span></div>
+    ${m.missing.length?`<div class="confirm red"><strong>Missing in this message: ${m.missing.map(esc).join(', ')}.</strong> Add it in Details, or edit the wording below before sending.</div>`:''}
+    <div class="field"><span class="lbl">How the client sees it in WhatsApp</span>
+      <div class="wa-chat"><span class="wa-to">To ${esc(a.c.name)}</span><div class="wa-bubble"><span id="waPrev">${waHTML(m.text)}</span><span class="wa-time">9:00 ✓✓</span></div></div></div>
+    <details><summary style="cursor:pointer;font-weight:600;font-size:14px">Edit message</summary>
+    <div class="field" style="margin-top:8px"><label for="msgText">Text between *stars* shows in bold in WhatsApp</label><textarea id="msgText" style="min-height:260px">${esc(m.text)}</textarea></div></details>
+    <div class="field"><span class="lbl">ePartner screenshot</span>${shots[id]?`<div class="shot"><img src="${shots[id]}" alt="ePartner details page for ${esc(a.c.name)}"></div><small>WhatsApp links can only carry text. To send the screenshot as well, tap "Save page as image" and attach it in the chat.</small>`:`<small>None attached yet. Add it in Details so it shows in the PDF.</small>`}</div>
+    <div id="sendStep" class="confirm">
+      <div>Check the number and message. Tapping the button opens WhatsApp with this text filled in. <strong>Nothing is sent until you press Send inside WhatsApp.</strong></div>
+      <div class="row"><a class="btn wa" id="waGo" href="${esc(waUrl)}" target="_blank" rel="noopener" data-act="waOpened" data-id="${id}">${ICON.wa}Open WhatsApp</a>
+      <button class="btn" data-act="copyMsg">Copy message</button>
+      <button class="btn" data-act="png" data-id="${id}">Save page as image</button></div>
+    </div>
+    <div id="markStep" ${sent?'':'hidden'} class="confirm" style="border-color:var(--ok);background:var(--ok-bg)">
+      ${sent?`<div>Marked as reminded on ${fmt(sent)}.</div><div class="row"><button class="btn" data-act="unmark" data-id="${id}">Undo "reminded"</button></div>`:`<div><strong>Did you send it in WhatsApp?</strong></div><div class="row"><button class="btn primary" data-act="mark" data-id="${id}">Yes, mark as reminded</button><button class="btn" data-act="close">Not yet</button></div>`}
+    </div>`);
+  const ta = $('#msgText'); const go = $('#waGo');
+  ta.addEventListener('input', () => { $('#waPrev').innerHTML = waHTML(ta.value); go.href = a.wa ? `https://wa.me/${a.wa}?text=${encodeURIComponent(ta.value)}` : ''; });
+}
+
+function editForm(c, a){
+  const iso = v => { const p = parseDate(v, S.settings.dateOrder); return p.iso || ''; };
+  const raw = v => (v===null||v===undefined)?'':String(v);
+  const dueBad = !iso(c.dueRaw) && raw(c.dueRaw);
+  const opt = (v,l,cur) => `<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
+  const fcur = parseFreq(c.freqRaw).f || '';
+  return `<form id="editForm" class="settings" novalidate>
+    ${a && a.issues.length?`<ul class="issues">${a.issues.map(i=>`<li>${esc(i)}</li>`).join('')}</ul>`:''}
+    <div class="grid2">
+      <div class="field"><label for="eName">Customer name *</label><input id="eName" value="${esc(c.name)}" required></div>
+      <div class="field"><label for="eCompany">Company</label><input id="eCompany" value="${esc(c.company)}"></div>
+      <div class="field"><label for="eDue">Premium due date *</label><input type="date" id="eDue" value="${iso(c.dueRaw)}">${dueBad?`<small>File said "${esc(c.dueRaw)}", which isn't a real date.</small>`:''}</div>
+      <div class="field"><label for="eFreq">Payment frequency</label><select id="eFreq">${opt('','Not given',fcur)}${opt('monthly','Monthly',fcur)}${opt('quarterly','Quarterly',fcur)}${opt('half-yearly','Half-yearly',fcur)}${opt('yearly','Yearly',fcur)}</select></div>
+      <div class="field"><label for="ePolicy">Policy no.</label><input id="ePolicy" value="${esc(c.policy)}"></div>
+      <div class="field"><label for="eAmount">Premium amount</label><input id="eAmount" inputmode="decimal" value="${esc(raw(c.amountRaw))}"></div>
+      <div class="field"><label for="ePhone">Phone (WhatsApp) *</label><input id="ePhone" inputmode="tel" value="${esc(raw(c.phoneRaw))}" placeholder="+60 12-345 6789"></div>
+      <div class="field"><label for="eEmail">Email</label><input id="eEmail" type="email" value="${esc(c.email)}"></div>
+      <div class="field"><label for="eBday">Birthday</label><input type="date" id="eBday" value="${iso(c.birthdayRaw)}"></div>
+      <div class="field"><label for="eManager">Account manager</label><input id="eManager" value="${esc(c.manager)}"></div>
+    </div>
+  </form>`;
+}
+function openEdit(id){
+  const a = findA(id); if(!a) return; const c = a.c;
+  openSheet(`${head(esc(c.name||'Customer details'), a.next?`Next due ${fmt(a.next)}`:'No valid due date yet')}
+    ${editForm(c,a)}
+    <div class="field"><span class="lbl">ePartner details page screenshot</span>
+      ${shots[id]?`<div class="shot"><img src="${shots[id]}" alt="ePartner screenshot"></div>`:'<small>Take a screenshot of this customer\'s ePartner details page and add it here. It goes on their page in the PDF.</small>'}
+      <div class="row"><label class="btn" for="shotIn">${shots[id]?'Replace screenshot':'Add screenshot'}</label><input type="file" id="shotIn" accept="image/*" hidden data-id="${id}">${shots[id]?`<button class="btn danger" data-act="delShot" data-id="${id}">Remove screenshot</button>`:''}</div>
+    </div>
+    <div id="editConfirm"></div>
+    <div class="row"><button class="btn primary" data-act="askSave" data-id="${id}">Save changes</button><button class="btn" data-act="close">Cancel</button><span style="flex:1"></span><button class="btn danger" data-act="askDel" data-id="${id}">Delete customer</button></div>`);
+}
+function readEdit(){
+  const g = id => $('#'+id).value.trim();
+  return { name:g('eName'), company:g('eCompany'), dueRaw:g('eDue'), freqRaw:g('eFreq'), policy:g('ePolicy'), amountRaw:g('eAmount'), phoneRaw:g('ePhone'), email:g('eEmail'), birthdayRaw:g('eBday'), manager:g('eManager') };
+}
+const LABELS = { name:'Name', company:'Company', dueRaw:'Due date', freqRaw:'Frequency', policy:'Policy no.', amountRaw:'Premium', phoneRaw:'Phone', email:'Email', birthdayRaw:'Birthday', manager:'Account manager' };
+
+let pendingImport = null;
+function openImport(){
+  openSheet(`${head('Import customer list','Excel (.xlsx, .xls) or CSV. First sheet is used.')}
+    <div class="field"><label class="btn primary" for="fileIn" style="align-self:flex-start">${ICON.up}Choose file</label><input type="file" id="fileIn" hidden accept=".xlsx,.xls,.csv,.pdf,.png,.jpg,.jpeg,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv">
+    <small>Columns the app looks for: Customer Name, Company, Birthday, Phone, Email, Account Manager, Policy No, Premium Amount, <strong>Premium Due Date</strong>, Frequency. Header names don't need to match exactly.</small></div>
+    <div id="importResult"></div>
+    <div class="row"><button class="btn" data-act="template">Download blank template</button></div>`);
+}
+function showImportResult(res){
+  const box = $('#importResult'); if(!box) return;
+  if(res.error){ box.innerHTML = `<div class="confirm red">${esc(res.error)}</div>`; return; }
+  pendingImport = res;
+  const mapped = FIELDS.filter(([k]) => res.map[k]!==undefined).map(([k,l]) => `<tr><td>${l}</td><td>${esc(res.headers[res.map[k]])}</td></tr>`).join('');
+  const missingReq = FIELDS.filter(([k]) => ['name','phoneRaw','dueRaw'].includes(k) && res.map[k]===undefined).map(([,l]) => l);
+  // quick analysis preview
+  const saved = S.customers; S.customers = res.customers; const pa = analyzeAll(); S.customers = saved;
+  const bad = pa.list.filter(a => a.issues.length).length;
+  const assumed = pa.list.filter(a => a.freqAssumed).length;
+  box.innerHTML = `<div class="panel" style="padding:12px">
+    <div><strong>${esc(res.filename)}</strong>: ${res.customers.length} customer row${res.customers.length===1?'':'s'} (headers on row ${res.headerRow}).</div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>App field</th><th>Your column</th></tr></thead><tbody>${mapped}</tbody></table></div>
+    ${missingReq.length?`<div class="confirm red"><strong>Not found: ${missingReq.join(', ')}.</strong> ${missingReq.includes('Premium due date')?'Without a due-date column nobody can be reminded. Add a "Premium Due Date" column and import again.':'Those customers will appear under Needs checking.'}</div>`:''}
+    <div>${res.customers.length-bad} ready · <strong>${bad}</strong> need checking${assumed?` · ${assumed} with blank frequency treated as ${S.settings.blankFreq==='monthly'?'monthly':'one-off'} (change in Settings)`:''}</div>
+    <div class="confirm"><div><strong>Replace ${S.isSample?'the sample data':`your current ${S.customers.length} customers`} with these ${res.customers.length}?</strong> "Reminded" marks for old customers are kept only if you re-import the same people.</div>
+    <div class="row"><button class="btn primary" data-act="doImport">Yes, use this list</button><button class="btn" data-act="close">Cancel</button></div></div>
+  </div>`;
+}
+
+/* ---------- PDF ---------- */
+let dlP = null;
+function downloads(){ if(!dlP) dlP = (window.claude && typeof window.claude.use==='function') ? window.claude.use('downloads').catch(()=>null) : Promise.resolve(null); return dlP; }
+async function offerFile(filename, blob){
+  const dl = await downloads();
+  if(dl){
+    try{ await dl.save({ filename, data: blob }); toast(`Saved ${filename}`); }
+    catch(e){ toast(e && e.code==='declined' ? 'Download cancelled' : `Couldn't save the file here (${e && e.code || 'error'}).`); }
+    return;
+  }
+  const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url), 30000);
+  toast(`Downloaded ${filename}`);
+}
+function pdfSummaryPages(due, cyc){
+  const per = 15, pages = [];
+  for(let i=0;i<Math.max(due.length,1);i+=per){
+    const rows = due.slice(i,i+per).map((a,j) => `<tr><td>${i+j+1}</td><td><strong>${esc(a.c.name)}</strong><small>${esc(a.c.company||'')}</small></td><td class="nw">${esc(a.c.policy||'—')}</td><td class="nw">${esc(money(a.c.amountRaw)||'—')}</td><td class="nw"><strong>${fmt(a.next)}</strong><small>${a.freq?FREQ_LABEL[a.freq]:''}</small></td><td>${fmtShort(a.remindOn)}</td><td>${a.wa?'+'+esc(a.wa):'<em>check</em>'}</td><td>${esc(a.c.manager||'—')}</td><td class="st">${esc(statusText(a))}</td></tr>`).join('');
+    pages.push(`<div class="pp"><div class="ph"><div><div class="tag">Premium due list</div><h1>Due ${fmtShort(cyc.start)} – ${fmt(cyc.end)}</h1><div class="sub">Check-in ${fmt(cyc.start)} · next check-in ${fmt(cyc.next)} · as of ${fmt(asOf)}</div></div><div class="sub" style="text-align:right">${due.length} customer${due.length===1?'':'s'}<br>Prepared by ${esc(S.settings.sender)}</div></div>
+      <table><thead><tr><th>#</th><th>Customer</th><th>Policy</th><th>Premium</th><th>Due date</th><th>Remind</th><th>WhatsApp</th><th>Acc. manager</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="pf"><span>Premium Due Reminder · rule: remind 3 days before due date</span><span>__PAGE__</span></div></div>`);
+  }
+  return pages;
+}
+function pdfCustomerPage(a){
+  const c = a.c, en = buildMsg(a,'en'), zh = buildMsg(a,'zh');
+  const kv = (k,v) => `<div><span>${k}</span>${esc(v||'—')}</div>`;
+  return `<div class="pp"><div class="ph"><div><div class="tag">Premium reminder</div><h1>${esc(c.name)}</h1><div class="sub">${esc(c.company||'')}</div></div><div style="text-align:right"><div class="sub">Due date</div><div style="font-family:var(--f-display);font-size:22px;font-weight:800">${fmt(a.next)}</div><div class="sub st">${esc(statusText(a))}</div></div></div>
+    <div class="kvp">${kv('Policy no.',c.policy)}${kv('Premium',money(c.amountRaw))}${kv('Frequency',a.freq?FREQ_LABEL[a.freq]+(a.freqAssumed?' (assumed)':''):'')}${kv('Remind on',fmt(a.remindOn))}${kv('WhatsApp',a.wa?'+'+a.wa:c.phoneRaw)}${kv('Email',c.email)}${kv('Birthday',a.bday?fmt(a.bday):'')}${kv('Account manager',c.manager)}</div>
+    <div class="msgs"><div><div class="mlabel">Message · English</div><div class="mbox">${waHTML(en.text)}</div></div><div><div class="mlabel">信息 · 中文</div><div class="mbox zh">${waHTML(zh.text)}</div></div></div>
+    <div class="shotbox"><div class="mlabel">ePartner details page</div>${shots[c.id]?`<img src="${shots[c.id]}" alt="">`:'<div class="noshot">No ePartner screenshot attached.<br>Add one from this customer\'s Details in the app.</div>'}</div>
+    <div class="pf"><span>Prepared by ${esc(S.settings.sender)} · generated ${fmt(todayISO())}</span><span>__PAGE__</span></div></div>`;
+}
+async function renderPages(htmls, onStep){
+  const stage = $('#pdfStage'); const out = [];
+  try{ await document.fonts.ready; }catch(e){}
+  for(let i=0;i<htmls.length;i++){
+    stage.innerHTML = htmls[i].replace('__PAGE__', `Page ${i+1} of ${htmls.length}`);
+    const el = stage.firstElementChild;
+    await Promise.all([...el.querySelectorAll('img')].map(im => im.complete ? 0 : new Promise(r => { im.onload = im.onerror = r; })));
+    const canvas = await html2canvas(el, { scale:2, backgroundColor:'#FFFFFF', useCORS:true, logging:false, windowWidth:1000 });
+    out.push(canvas); onStep && onStep(i+1, htmls.length);
+  }
+  stage.innerHTML = '';
+  return out;
+}
+let busy = false;
+async function makePdf(){
+  if(busy) return; if(!window.html2canvas || !window.jspdf){ toast('The PDF tools did not load. Check your connection and reload.'); return; }
+  busy = true;
+  const { cyc, list } = A;
+  const due = list.filter(a => a.inCycle).sort((x,y) => x.next.localeCompare(y.next) || String(x.c.name).localeCompare(String(y.c.name)));
+  const prog = $('#progress'); prog.hidden = false;
+  try{
+    const pages = [...pdfSummaryPages(due, cyc), ...due.map(pdfCustomerPage)];
+    const canvases = await renderPages(pages, (i,n) => { prog.textContent = `Building PDF… page ${i} of ${n}`; });
+    const doc = new window.jspdf.jsPDF({ unit:'mm', format:'a4', compress:true });
+    canvases.forEach((cv,i) => { if(i) doc.addPage(); doc.addImage(cv.toDataURL('image/jpeg',0.9),'JPEG',0,0,210,297); });
+    const blob = doc.output('blob');
+    window.__lastPdf = blob;
+    prog.textContent = `PDF ready: ${pages.length} pages.`;
+    await offerFile(`Premium-due-${cyc.start}.pdf`, blob);
+  }catch(e){ prog.textContent = 'Something went wrong building the PDF. Try again.'; console.error(e); }
+  busy = false;
+}
+async function makePng(id){
+  const a = findA(id); if(!a || busy) return; busy = true;
+  try{ const [cv] = await renderPages([pdfCustomerPage(a)]); const blob = await new Promise(r => cv.toBlob(r,'image/png')); await offerFile(`Reminder-${String(a.c.name).replace(/[^\w一-鿿]+/g,'-')}-${a.next}.png`, blob); }
+  catch(e){ toast('Could not create the image.'); }
+  busy = false;
+}
+
+/* ---------- toast ---------- */
+let tt;
+function toast(msg){ let t = $('.toast'); if(!t){ t = document.createElement('div'); t.className='toast'; t.setAttribute('role','status'); document.body.appendChild(t); } t.textContent = msg; t.hidden=false; clearTimeout(tt); tt = setTimeout(()=>{ t.hidden=true; }, 3200); }
+
+/* ---------- events ---------- */
+document.addEventListener('click', async e => {
+  const t = e.target.closest('[data-act],[data-tab]'); if(!t) return;
+  if(t.dataset.tab){ tab = t.dataset.tab; render(); return; }
+  const act = t.dataset.act, id = t.dataset.id;
+  if(act==='close'){ closeSheet(); return; }
+  if(act==='import'){ openImport(); return; }
+  if(act==='pdf'){ makePdf(); return; }
+  if(act==='png'){ makePng(id); return; }
+  if(act==='send'){ openSend(id); return; }
+  if(act==='edit'){ openEdit(id); return; }
+  if(act==='lang'){ sendLang = t.dataset.lang; openSend(id); return; }
+  if(act==='waOpened'){ if(!t.getAttribute('href')){ e.preventDefault(); return; } const m = $('#markStep'); if(m) m.hidden = false; return; }
+  if(act==='copyMsg'){ const ta = $('#msgText'); try{ await navigator.clipboard.writeText(ta.value); toast('Message copied'); }catch(err){ ta.focus(); ta.select(); toast('Selected. Press copy on your keyboard.'); } return; }
+  if(act==='mark'){ const a = findA(id); S.sent[a.key] = asOf; save(); closeSheet(); render(); toast(`${a.c.name} marked as reminded`); return; }
+  if(act==='unmark'){ const a = findA(id); delete S.sent[a.key]; save(); closeSheet(); render(); toast('Reminder mark removed'); return; }
+  if(act==='askSave'){
+    const c = findA(id).c, n = readEdit();
+    const changes = Object.keys(n).filter(k => String(c[k]??'') !== n[k] && !(k.endsWith('Raw') && parseDate(c[k],S.settings.dateOrder).iso && parseDate(c[k],S.settings.dateOrder).iso===n[k]));
+    const box = $('#editConfirm');
+    if(!changes.length){ box.innerHTML = `<div class="confirm">No changes to save.</div>`; return; }
+    if(!n.name){ box.innerHTML = `<div class="confirm red">Customer name can't be empty.</div>`; return; }
+    box.innerHTML = `<div class="confirm"><strong>Save these changes?</strong><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Field</th><th>Before</th><th>After</th></tr></thead><tbody>${changes.map(k=>`<tr><td>${LABELS[k]}</td><td>${esc(c[k]||'—')}</td><td>${esc(n[k]||'—')}</td></tr>`).join('')}</tbody></table></div><div class="row"><button class="btn primary" data-act="doSave" data-id="${id}">Yes, save</button><button class="btn" data-act="cancelConfirm">Keep editing</button></div></div>`;
+    box.scrollIntoView({block:'nearest'}); return;
+  }
+  if(act==='cancelConfirm'){ $('#editConfirm').innerHTML=''; return; }
+  if(act==='doSave'){ const c = findA(id).c; Object.assign(c, readEdit()); commitReal(); closeSheet(); render(); toast('Saved'); return; }
+  if(act==='askDel'){ const c = findA(id).c; $('#editConfirm').innerHTML = `<div class="confirm red"><strong>Delete ${esc(c.name)} from the list?</strong> This removes them and their screenshot from this device. Re-import your file to bring them back.<div class="row"><button class="btn danger" data-act="doDel" data-id="${id}">Yes, delete</button><button class="btn" data-act="cancelConfirm">Keep</button></div></div>`; return; }
+  if(act==='doDel'){ S.customers = S.customers.filter(c => c.id!==id); await shotDel(id); commitReal(); closeSheet(); render(); toast('Customer deleted'); return; }
+  if(act==='delShot'){ await shotDel(id); openEdit(id); render(); return; }
+  if(act==='doImport'){
+    if(!pendingImport) return;
+    // keep ids (and screenshots, reminded marks) for customers matched by policy or name+phone
+    const keyOf = c => c.policy ? 'p:'+String(c.policy).trim().toLowerCase() : 'n:'+String(c.name).trim().toLowerCase()+'|'+String(c.phoneRaw).replace(/\D/g,'');
+    const old = {}; if(!S.isSample) S.customers.forEach(c => { old[keyOf(c)] = c.id; });
+    const used = new Set();
+    pendingImport.customers.forEach(c => { const k = keyOf(c); if(old[k] && !used.has(old[k])){ c.id = old[k]; used.add(c.id); } });
+    if(S.isSample){ await shotClearAll(); S.sent = {}; }
+    else { for(const oid of Object.values(old)) if(!used.has(oid)) await shotDel(oid); }
+    S.customers = pendingImport.customers; S.isSample = false; pendingImport = null; save(); closeSheet(); tab='due'; render(); toast(`Imported ${S.customers.length} customers`); return;
+  }
+  if(act==='template'){
+    const csv = 'Customer Name,Company,Birthday,Phone,Email,Account Manager,Policy No,Premium Amount,Premium Due Date,Frequency\r\nExample Name,Example Sdn Bhd,15/04/1985,012-345 6789,name@example.com,Your AM,P-0000001,350.00,28/11/2026,Monthly\r\n';
+    offerFile('premium-due-template.csv', new Blob(['﻿'+csv], {type:'text/csv'})); return;
+  }
+  if(act==='resetTpl'){ S.settings.tplEN = TPL_EN; S.settings.tplZH = TPL_ZH; save(); render(); toast('Default wording restored'); return; }
+  if(act==='clear'){ openSheet(`${head('Clear all customer data?')}<div class="confirm red">This removes every customer, screenshot and "reminded" mark from this device. Your Excel file is not touched. The sample customers will show again.<div class="row"><button class="btn danger" data-act="doClear">Yes, clear everything</button><button class="btn" data-act="close">Cancel</button></div></div>`); return; }
+  if(act==='doClear'){ await shotClearAll(); S.sent = {}; S.customers = makeSample(); S.isSample = true; save(); closeSheet(); render(); toast('All customer data cleared'); return; }
+});
+function commitReal(){ if(S.isSample){ S.isSample = false; } save(); }
+document.addEventListener('change', async e => {
+  const t = e.target;
+  if(t.id==='asof'){ asOf = t.value || todayISO(); if(S.isSample) S.customers = makeSample(); render(); return; }
+  if(t.id==='fileIn' && t.files[0]){ const box = $('#importResult'); if(box) box.innerHTML = '<div class="progress">Reading…</div>'; showImportResult(await readFile(t.files[0])); return; }
+  if(t.id==='shotIn' && t.files[0]){ const f = t.files[0]; if(!f.type.startsWith('image/')){ toast('Choose an image file'); return; } await shotPut(t.dataset.id, f); openEdit(t.dataset.id); render(); toast('Screenshot attached'); return; }
+  if(t.id==='ccQuick' && t.value){ S.settings.cc = t.value; save(); render(); toast(`Country code +${t.value} added to local numbers`); return; }
+  const map = { sSender:'sender', sCurrency:'currency', sCC:'cc', sOrder:'dateOrder', sFreq:'blankFreq', sLang:'lang', sEN:'tplEN', sZH:'tplZH' };
+  if(map[t.id]){ S.settings[map[t.id]] = t.value; if(t.id==='sLang') sendLang = null; save(); render(); toast('Setting saved'); }
+});
+document.addEventListener('keydown', e => { if(e.key==='Escape' && sheetRoot.innerHTML) closeSheet(); });
+
+/* ---------- sample data (made up, relative to the as-of date) ---------- */
+function makeSample(){
+  const d = n => { const [y,m,dd] = ymd(addDays(asOf,n)); return `${pad(dd)}/${pad(m)}/${y}`; };
+  const cyc = cycleFor(asOf);
+  const id = n => 'sample-'+n;
+  return [
+    {id:id(1),name:'Tan Wei Ming',company:'Sunrise Logistics Sdn Bhd',birthdayRaw:'12/03/1984',phoneRaw:'012-345 6789',email:'weiming.tan@example.com',manager:'Aisha Rahman',policy:'P-10023481',amountRaw:'350',dueRaw:d(2),freqRaw:'Monthly'},
+    {id:id(2),name:'Nur Aina binti Hassan',company:'Kedai Runcit Aina',birthdayRaw:fmtISOtoDMY(addDays(cyc.start,6),1990),phoneRaw:'+60 13-222 1188',email:'aina.hassan@example.com',manager:'Jason Ooi',policy:'P-10023517',amountRaw:'1280',dueRaw:d(3),freqRaw:'Quarterly'},
+    {id:id(3),name:'Daniel Wong',company:'Harbour View Cafe',birthdayRaw:'1991-08-19',phoneRaw:'+65 9123 4567',email:'daniel@example.com',manager:'Jason Ooi',policy:'P-10023990',amountRaw:'210.5',dueRaw:d(1),freqRaw:'Monthly'},
+    {id:id(4),name:'Lim Mei Ling',company:'MeiLing Design Studio',birthdayRaw:'15/07/1979',phoneRaw:'0167788990',email:'meiling@example.com',manager:'Aisha Rahman',policy:'P-10024002',amountRaw:'495',dueRaw:d(6),freqRaw:''},
+    {id:id(5),name:'Rajesh Kumar a/l Subramaniam',company:'RK Engineering Works',birthdayRaw:'04/01/1975',phoneRaw:'019-887 7665',email:'',manager:'Aisha Rahman',policy:'P-10024550',amountRaw:'4560',dueRaw:d(9),freqRaw:'Yearly'},
+    {id:id(6),name:'Chong Ka Yan',company:'Golden Leaf Trading',birthdayRaw:'02/12/1988',phoneRaw:'011-2345 6677',email:'kayan.chong@example.com',manager:'Jason Ooi',policy:'P-10025113',amountRaw:'480',dueRaw:d(5),freqRaw:'Monthly'},
+    {id:id(7),name:'Siti Hajar binti Ismail',company:'',birthdayRaw:'',phoneRaw:'-',email:'siti.hajar@example.com',manager:'Aisha Rahman',policy:'P-10025200',amountRaw:'150',dueRaw:d(4),freqRaw:'Monthly'},
+    {id:id(8),name:'Ho Jun Jie',company:'Ho Brothers Hardware',birthdayRaw:'30/06/1992',phoneRaw:'012-998 4410',email:'',manager:'Jason Ooi',policy:'P-10025377',amountRaw:'620',dueRaw:'31/02/2026',freqRaw:'Monthly'},
+    {id:id(9),name:'Farah Lee',company:'Bright Minds Tuition',birthdayRaw:'21/05/1986',phoneRaw:'017-555 0192',email:'farah.lee@example.com',manager:'Aisha Rahman',policy:'P-10025490',amountRaw:'275',dueRaw:'',freqRaw:'Monthly'},
+    {id:id(10),name:'TAN WEI MING',company:'Sunrise Logistics',birthdayRaw:'12/03/1984',phoneRaw:'0123456789',email:'',manager:'Aisha Rahman',policy:'P-10023481',amountRaw:'350',dueRaw:d(2),freqRaw:'M'},
+    {id:id(11),name:'Ong Siew Lan',company:'Ong & Co Accounting',birthdayRaw:'21/05/1969',phoneRaw:'012-998 1234',email:'siewlan@example.com',manager:'Jason Ooi',policy:'P-10026001',amountRaw:'925',dueRaw:d(24),freqRaw:'Half-yearly'},
+  ];
+}
+function fmtISOtoDMY(iso, year){ const [,m,d] = ymd(iso); return `${pad(d)}/${pad(m)}/${year}`; }
+
+/* ---------- boot ---------- */
+$('#asof').value = asOf;
+const hasReal = load();
+if(!hasReal){ S.customers = makeSample(); S.isSample = true; if(!S.settings.cc) S.settings.cc = '60'; if(!S.settings.currency) S.settings.currency = 'RM'; }
+render();
+shotLoadAll().then(render);
+downloads();
+window.PDR = { importBuffer, showImportResult, openImport, makePdf, setAsOf: v => { asOf = v; $('#asof').value = v; if(S.isSample) S.customers = makeSample(); render(); }, state: () => S, analyze: () => analyzeAll() };
+})();
+</script>
+
+</html>
