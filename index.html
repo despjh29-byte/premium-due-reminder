@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="description" content="Find customers whose insurance premium is due, send English + Chinese WhatsApp reminders 3 days before, and export a PDF list.">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0C6660">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Premium Due">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
 <title>Premium Due Reminder</title>
 <meta name="claude:viewport-fit-sides" content="cover">
@@ -838,4 +846,39 @@ window.PDR = { importBuffer, showImportResult, openImport, makePdf, setAsOf: v =
 })();
 </script>
 
+<style>
+.install-bar{position:fixed;left:0;right:0;bottom:0;z-index:15;background:var(--surface);border-top:1px solid var(--line);box-shadow:0 -6px 20px rgba(0,0,0,.08);padding:12px max(16px,env(safe-area-inset-right,0px)) calc(12px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+.install-bar .in{max-width:760px;margin:0 auto;display:flex;gap:12px;align-items:center}
+.install-bar img{width:44px;height:44px;border-radius:10px;flex:none}
+.install-bar p{margin:0;flex:1;min-width:0;font-size:13.5px;line-height:1.35}
+.install-bar p strong{display:block;font-size:14.5px}
+.install-bar .share{display:inline-block;vertical-align:-3px;width:16px;height:16px}
+</style>
+<script>
+(() => {
+  // Offline support + "Install app" prompt (installable web app / PWA)
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  if (standalone) return;
+  const KEY = 'pdr.installDismissed';
+  let dismissed = false; try { dismissed = localStorage.getItem(KEY) === '1'; } catch (e) {}
+  if (dismissed) return;
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const SHARE = '<svg class="share" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 15V3m0 0-4 4m4-4 4 4M6 11H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-1"/></svg>';
+  function show(inner) {
+    const bar = document.createElement('div'); bar.className = 'install-bar'; bar.setAttribute('role', 'region'); bar.setAttribute('aria-label', 'Install app');
+    bar.innerHTML = `<div class="in"><img src="icons/icon-192.png" alt="">${inner}<button class="x" aria-label="Not now" data-x>×</button></div>`;
+    bar.querySelector('[data-x]').onclick = () => { bar.remove(); try { localStorage.setItem(KEY, '1'); } catch (e) {} };
+    document.body.appendChild(bar); return bar;
+  }
+  let deferred = null;
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault(); deferred = e;
+    const bar = show('<p><strong>Install Premium Due Reminder</strong>Open it from your home screen like any app, even offline.</p><button class="btn primary" data-install>Install</button>');
+    bar.querySelector('[data-install]').onclick = async () => { deferred.prompt(); const r = await deferred.userChoice.catch(() => null); deferred = null; bar.remove(); };
+  });
+  window.addEventListener('appinstalled', () => { document.querySelector('.install-bar')?.remove(); });
+  if (isIOS) show(`<p><strong>Install on your iPhone</strong>In Safari, tap Share ${SHARE} then <b>Add to Home Screen</b>.</p>`);
+})();
+</script>
 </html>

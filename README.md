@@ -21,3 +21,8 @@ There is no server. Customer data, screenshots and "reminded" marks are stored o
 - `docs/HOW-TO-USE.md`: plain-English user guide
 - `docs/sample-customers.csv`: made-up test list (includes deliberately messy rows)
 - `docs/sample-output.pdf`: a test-run PDF for the 25 Nov 2026 check-in
+
+## Install as an app
+It is an installable web app (PWA): it gets its own icon, opens full-screen, and keeps working offline after the first visit.
+- **iPhone (Safari):** open the app link → tap **Share** → **Add to Home Screen**.
+- **Android (Chrome):** open the app link → tap **Install** on the banner, or ⋮ → **Install app**.
