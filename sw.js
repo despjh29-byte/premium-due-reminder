@@ -1,8 +1,8 @@
 // Premium Due Reminder: offline support.
 // The app page is fetched fresh when online (so updates arrive) and served from cache when offline.
 // Libraries and fonts are cached the first time they load.
-const CACHE = 'pdr-v1';
-const SHELL = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
+const CACHE = 'pdr-v2';
+const SHELL = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png?v=2', './icons/icon-512.png?v=2', './icons/apple-touch-icon.png?v=2'];
 const LIBS = [
   'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js',
